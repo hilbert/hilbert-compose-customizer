@@ -69,6 +69,11 @@ volumes = config.setdefault('volumes', {})
 volumes[volume] = {'external': True}
 
 for service, sconf in config['services'].items():
+    if 'gpu' in sconf:
+        if sconf['gpu'] == 'disable':
+            del sconf['gpu']
+            continue
+        del sconf['gpu']
     sconf.setdefault('volumes', []).extend(cuda_config['Volumes'])
     devices = sconf.setdefault('devices', [])
     if not any(gdev in devices for gdev in gpu_devices):
