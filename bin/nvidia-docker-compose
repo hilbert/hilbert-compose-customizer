@@ -40,9 +40,15 @@ parser.add_argument('-G', '--generate', action='store_true',
 
 (args, extras) = parser.parse_known_args()
 
-resp = request.urlopen('http://{0}/docker/cli/json'.format(args.nvidia_docker_host)).read().decode()
-cuda_config = json.loads(resp)
+req = request.Request('http://{0}/docker/cli/json'.format(args.nvidia_docker_host))
 
+try: req = request.urlopen(req)
+except URLError as e:
+    print(e.reason)
+
+resp = req.read().decode()
+cuda_config = json.loads(resp)
+    
 gpu_devices = []
 support_devices = []
 
