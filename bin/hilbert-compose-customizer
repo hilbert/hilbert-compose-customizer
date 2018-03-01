@@ -1,10 +1,26 @@
 #!/usr/bin/env python
 
+# Taken from https://github.com/eywalker/nvidia-docker-compose.git (MIT)
+
 import argparse
-import yaml
 import json
 import sys
 import re
+import os
+import os.path
+import errno
+from os import listdir, walk
+from os.path import isfile, isdir, join 
+import stat
+import grp
+
+#import yaml
+import ruamel.yaml as yaml
+import ruamel.yaml.error
+#from ruamel.yaml.error import UnsafeLoaderWarning
+import warnings
+warnings.simplefilter('ignore', ruamel.yaml.error.UnsafeLoaderWarning)
+
 
 # support Python 2 or 3
 if sys.version_info[0] == 3:
@@ -52,31 +68,53 @@ gpu_devices = []
 support_devices = []
 _volumes = None
 
-try:
-    req = Request('http://{0}/docker/cli/json'.format(args.nvidia_docker_host))
-    req = urlopen(req)
-    resp = req.read().decode()
-    cuda_config = json.loads(resp)
+# NOTE: check /dev/dri/* for devices with group==video!
+_dri_path = '/dev/dri'
+if isdir(_dri_path):
+    _video_grp_id = grp.getgrnam('video').gr_gid
+    for _f in listdir(_dri_path):
+        _ff = join(_dri_path, _f)
+        _s = os.stat(_ff)
+        if  (_s.st_gid == _video_grp_id) and (stat.S_ISBLK(_s.st_mode) or stat.S_ISCHR(_s.st_mode)):
+            support_devices.append(_ff)
 
-#    print(cuda_config)
+HILBERT_CUSTOMIZATIONS = os.environ.get("HILBERT_CUSTOMIZATIONS","nv").split(" ")
 
-    GPU_DEVICE_PATTERN = re.compile(r'/dev/nvidia\d+')
+if "nv" in HILBERT_CUSTOMIZATIONS:
+    try:
+        req = Request('http://{0}/docker/cli/json'.format(args.nvidia_docker_host))
+        req = urlopen(req)
+        resp = req.read().decode()
+        cuda_config = json.loads(resp)
 
-    for dev in cuda_config['Devices']:
-        if GPU_DEVICE_PATTERN.match(dev):
-            gpu_devices.append(dev)
-        else:
-            support_devices.append(dev)
+        #    print(cuda_config)
+        GPU_DEVICE_PATTERN = re.compile(r'/dev/nvidia\d+')
 
-    gpu_devices.sort()
+        for dev in cuda_config['Devices']:
+            if GPU_DEVICE_PATTERN.match(dev):
+                gpu_devices.append(dev)
+            else:
+                support_devices.append(dev)
 
-    _volumes = cuda_config['Volumes']
+        # Workaround due to 
+        NVIDIA_MODESET = "/dev/nvidia-modeset"
+        if NVIDIA_MODESET not in cuda_config['Devices']:
+            if os.path.exists(NVIDIA_MODESET):
+                support_devices.append(NVIDIA_MODESET)
 
-except URLError as e:
-    if hasattr(e, 'reason'):
-        print('Note: We failed to reach the NVidia-Docker pluging. Reason: ', e.reason)
-    elif hasattr(e, 'code'):
-        print('Note: NVidia-Docker pluging couldn\'t fulfill the request. Error code: ', e.code)
+        gpu_devices.sort()
+
+        _volumes = cuda_config['Volumes']
+    except URLError as e:
+        if hasattr(e, 'reason'):
+            if not( hasattr(e.reason, 'errno') and (e.reason.errno == errno.ECONNREFUSED) ):
+                print('Note: We failed to reach the NVidia-Docker plugin. Reason: ', e.reason)
+#            else:
+#                print('Note: No connection to the NVidia-Docker plugin!') # OK: no Nvidia-Docker-Plugin installed!!!
+
+        elif hasattr(e, 'code'):
+            print('Note: NVidia-Docker pluging couldn\'t fulfill the request. Error code: ', e.code)
+
 
 n_gpu = len(gpu_devices)
 
@@ -110,22 +148,32 @@ _services = args.services.split(",")
 
 SERVICE_PATTERN = re.compile(r'^[_A-Za-z][_a-zA-Z0-9]*$')
 
+#print(_volumes)
+#print(_services)
+#print(gpu_devices)
+#print(support_devices)
+
 for i in _services:
     s = i.strip()
     if not SERVICE_PATTERN.match(s):
         print("Warning: bad service name: '{}'. Skipping...".format(i))
         continue
 
-    if n_gpu > 0:
+    if ((len(gpu_devices) + len(support_devices)) > 0) or (_volumes is not None):
         sconf = services.setdefault(s, {})
-        sconf.setdefault('volumes', []).extend(_volumes)
-        devices = sconf.setdefault('devices', [])
-        if not any(gdev in devices for gdev in gpu_devices):
-            devices.extend(gpu_devices)
-        devices.extend(support_devices)
-    services[s] = sconf
+        if _volumes is not None:
+            sconf.setdefault('volumes', []).extend(_volumes)
+
+        if (len(gpu_devices) + len(support_devices)) > 0:
+            devices = sconf.setdefault('devices', [])
+            if not any(gdev in devices for gdev in gpu_devices):
+                devices.extend(gpu_devices)
+            devices.extend(support_devices)
+        services[s] = sconf
 
 config['services'] = services
+
+# print(config)
 
 yaml.safe_dump(config, args.output, default_flow_style=False)
 
